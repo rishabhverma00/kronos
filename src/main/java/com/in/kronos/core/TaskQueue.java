@@ -1,13 +1,16 @@
 package com.in.kronos.core;
 
 import com.in.kronos.api.Task;
-import java.util.Objects;
+import com.in.kronos.api.TaskContext;
+import jakarta.annotation.PreDestroy;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import lombok.Builder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,22 +25,13 @@ import org.springframework.beans.factory.annotation.Value;
 public class TaskQueue {
 
   private final BlockingQueue<TaskWrapper> queue;
-  private final ThreadPoolExecutor executorService;
+  private final ExecutorService executorService = Executors.newVirtualThreadPerTaskExecutor();
+  private final AtomicInteger activeTaskCount = new AtomicInteger(0);
 
-  @Value("${kronos.thread.pool.size}")
-  private Integer threadPoolSize;
-  private static final int DEFAULT_THREAD_POOL_SIZE = 2; // Default size if not configured
 
   public TaskQueue() {
     this.queue = new LinkedBlockingQueue<>();
-    this.executorService = (ThreadPoolExecutor) Executors.newFixedThreadPool(
-        Objects.isNull(threadPoolSize) ? DEFAULT_THREAD_POOL_SIZE : threadPoolSize);
-
-    // Start worker threads. They will immediately block on the queue, waiting for tasks.
-    for (int i = 0;
-        i < (Objects.isNull(threadPoolSize) ? DEFAULT_THREAD_POOL_SIZE : threadPoolSize); i++) {
-      executorService.submit(new Worker(queue));
-    }
+    executorService.submit(new Worker(queue));
   }
 
   /**
@@ -46,23 +40,28 @@ public class TaskQueue {
    * @param task The task to be executed.
    * @return A unique ID for the submitted task, which can be used for tracking.
    */
-  public String submitTask(Task task) {
-    String taskId = UUID.randomUUID().toString();
-    TaskWrapper taskWrapper = new TaskWrapper(taskId, task);
-    boolean offered = queue.offer(taskWrapper);
-    if (!offered) {
-      // This case is unlikely with a LinkedBlockingQueue unless we hit memory limits.
-      // A more robust implementation might throw an exception here.
-      log.error(
-          "FATAL: Failed to add task to the queue. The queue may be full or corrupted.");
-    }
-    return taskId;
+  public CompletableFuture<String> submitTask(Task task) {
+    CompletableFuture<String> future = new CompletableFuture<>();
+    executorService.submit(() -> {
+      activeTaskCount.incrementAndGet();
+      try {
+        TaskContext context = new TaskContext(UUID.randomUUID().toString());
+        task.execute(context);
+        future.complete(context.taskId());
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      } finally {
+        activeTaskCount.decrementAndGet();
+      }
+    });
+    return future;
   }
 
   /**
    * Initiates a graceful shutdown of the task queue. Previously submitted tasks are executed, but
    * no new tasks will be accepted. This method waits for all active tasks to complete.
    */
+  @PreDestroy
   public void shutdown() {
     log.info("queue shutdown initiated...");
     executorService.shutdown(); // Disable new tasks from being submitted
@@ -96,6 +95,6 @@ public class TaskQueue {
    * @return The number of active threads.
    */
   public int getActivetaskCount() {
-    return executorService.getActiveCount();
+    return activeTaskCount.get();
   }
 }

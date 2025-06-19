@@ -20,17 +20,16 @@ public class Worker implements Runnable {
         TaskWrapper taskWrapper = queue.take(); // Blocks until a job is available
         TaskContext context = new TaskContext(taskWrapper.getId());
 
-        log.info("Worker {} picked up task {}. Starting execution.", Thread.currentThread().getName(), context.getTaskId());
+        log.info("Worker {} picked up task {}. Starting execution.", Thread.currentThread().getName(), context.taskId());
 
         // CRITICAL: Catch all exceptions from the job's execution to prevent the worker thread from dying.
         try {
           taskWrapper.getTask().execute(context);
-        } catch (Throwable t) {
-          log.error("ERROR: task {} failed with an exception: {}", context.getTaskId(), t.getMessage());
-          t.printStackTrace(); // It's good practice to log the full stack trace.
+        }  catch (Throwable t) {
+          log.error("ERROR: task {} failed with an exception", context.taskId(), t);
         }
 
-        log.info("Worker {} finished task {}", Thread.currentThread().getName(), context.getTaskId());
+        log.info("Worker {} finished task {}", Thread.currentThread().getName(), context.taskId());
 
       } catch (InterruptedException e) {
         // This exception is expected during a graceful shutdown.
